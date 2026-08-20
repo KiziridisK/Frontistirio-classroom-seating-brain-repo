@@ -5,6 +5,10 @@
 > printable PDF export. Spans the `ClassRoom.layout` model, the `Test.seating_plan` model, the Angular
 > components (fabric.js canvas + native HTML5 drag-drop), the backend endpoints, and the seating PDF.
 >
+> **Updated 2026-07-23:** round desks (§Desk shapes), the same-course-at-one-desk warnings
+> (§Conflict warnings), and the touch/tap-to-place + responsive-zoom interaction that had shipped
+> undocumented in commit `8317565`.
+>
 > Related brains: [test-cycles](../Frontistirio-test-cycles-brain-repo/README.md) (host of the seating
 > UI), [pdf-generation](../Frontistirio-pdf-generation-brain-repo/README.md) (the seating PDF helper).
 
@@ -18,7 +22,8 @@
    participants list.
 
 Tech: **fabric.js v6** for the canvas (Angular 18, Ionic). **No `@angular/cdk`** — drag-drop is native
-HTML5. Greek `firstName`/`lastName` on the `Student` model are **camelCase**.
+HTML5 on desktop, **tap-to-place** on touch (see Phase 2). Greek `firstName`/`lastName` on the
+`Student` model are **camelCase**.
 
 ---
 
@@ -28,8 +33,9 @@ HTML5. Greek `firstName`/`lastName` on the `Student` model are **camelCase**.
 
 **Frontend** `src/app/models/classroom-layout.model.ts`:
 ```typescript
+type DeskShape = 'rect' | 'circle';           // absent = 'rect' (2026-07-23)
 interface SeatLayout { id: string; deskId: string | null; left: number; top: number; label?: string; }
-interface DeskLayout { id: string; left: number; top: number; width: number; height: number; angle: number; label?: string; }
+interface DeskLayout { id: string; left: number; top: number; width: number; height: number; angle: number; shape?: DeskShape; label?: string; }
 interface ClassroomLayout {
   version: number;                              // starts at 1
   canvasSize: { width: number; height: number }; // default 1200x800
@@ -42,6 +48,30 @@ Added to `ClassRoom` (`models/classroom.model.ts`): `layout?: ClassroomLayout;`
 
 **Backend** `models/classroom.js` — sub-schemas `deskSchema` / `seatSchema` / `layoutSchema` (all `_id: false`),
 field `layout: { type: layoutSchema, default: null }`. `left/top` = **absolute canvas coords of the center**.
+`deskSchema.shape: { type: String, enum: ["rect","circle"], default: "rect" }`.
+
+### Desk shapes *(2026-07-23)*
+
+A **round desk is an ellipse with `rx = width/2`, `ry = height/2`** — it reuses the existing
+width/height instead of adding a radius field, so scaling, rotation, persistence and the PDF's
+bounds math are identical for both shapes (and an uneven scale gives an oval table for free).
+`shape` is **optional and absent means `rect`**, so every layout saved before this needed **no
+migration** — the schema default and `normalizeLayout` backfill it on the next save.
+
+- Editor: `createDeskGroup(id, label, w, h, shape)` builds a `fabric.Ellipse` or a `fabric.Rect`;
+  `addDesk(shape)` behind two toolbar buttons (new circle default **120×120**, rect stays 140×70).
+  i18n `classrooms.diagram.add_round_desk`, icon `disc-outline`.
+- **`deskContainsPoint(desk, point)`** — fabric's `containsPoint` only tests the **bounding box**,
+  which overshoots at the corners of a round desk, so a seat dropped in a corner would bind to a desk
+  it doesn't visually sit on. Circle desks therefore get an extra ellipse test
+  (`(x/rx)² + (y/ry)² ≤ 1`) in the desk's own unscaled coords via `invertTransform`.
+- `deskToLayout` writes `shape`; `loadLayout` and paste pass it through; the test-seating modal's
+  read-only `buildDesk` mirrors the same branch.
+- Backend `normalizeLayout` whitelists it: `d.shape === "circle" ? "circle" : "rect"`.
+- **Verified end-to-end**: the `save-layout` payload carried `shape:"circle"` for the new desk and
+  `shape:"rect"` for the pre-existing ones; the seating PDF's content stream contained exactly
+  **2 `re` (rect) operators** (the rect desk + a legacy shapeless one) and 24 bezier segments
+  (4 seats + 2 ellipse desks × 4).
 
 ### Component `ClassroomDiagramComponent` (standalone)
 - Path: `src/app/classrooms/classroom-diagram/`. Route **`classrooms/:classroomId`** (RoleGuard, `store-user`).
@@ -106,7 +136,38 @@ seating_plan: {
 - **Drag chip → seat** = bind (nearest free seat within ~30px, converting drop coords with
   `getBoundingClientRect`). **Click an occupied seat** = unbind (returns student to list). Rules: **1
   seat per student, 1 student per seat**.
+- **Tap-to-place (touch)** *(shipped in `8317565`, documented 2026-07-23)* — HTML5 drag-and-drop does
+  not exist on touch, so the primary mobile interaction is **tap a chip to "arm" it
+  (`armedStudentId`), then tap a seat**. Handled in fabric's `mouse:down` (fabric maps touch → mouse,
+  so no drag-drop polyfill). Tapping an occupied seat with nothing armed still unbinds.
+- **Responsive fit** *(same commit)* — `applyFit()` + a `ResizeObserver` scale the natural-size layout
+  down to the pane width (`zoom`, never > 1). Drop coordinates are divided by `this.zoom` to get back
+  to scene coords.
 - Save: `TestCycleService.saveTestSeating(testId, assignments)` → toast → dismiss with assignments.
+
+### Conflict warnings — same course at one desk *(2026-07-23)*
+
+Two students sitting **the same exam** at **the same desk** is flagged. It was first built as a hard
+block and then **deliberately relaxed to a warning**: the plan is the user's call and there may be a
+reason for the seating, so the placement always goes through.
+
+- **`dayCoursesByStudent`** (`indexDayCourses()` in `ngOnInit`) — `studentId → the day's courses the
+  student sits`, i.e. `student.period_courses[period].courses ∩ courseIds`. A student can sit **more
+  than one** of the day's courses, so this is a **list** and the check is a **set intersection**, not
+  an equality test. `rebuildGroups` reads the same map — one source of truth.
+- **`findDeskConflict(studentId, seatId)`** — scans the other seats sharing the target seat's
+  `deskId` in the active room. Seats with `deskId: null` stand alone and never conflict.
+- **`assignStudentToSeat`** assigns regardless, then raises a **warning toast**
+  (`color: 'warning'`, `warning-outline`, 4s, `messages.seating_same_course_desk` with
+  `{{student}}`/`{{course}}`). `presentToast` was widened to take `{ params, color, icon, duration }`.
+- **Standing list** — `conflicts: SeatingConflict[]` is **derived state recomputed inside
+  `syncIndexes()`**, so it (a) clears itself the moment the plan is fixed and (b) flags plans saved
+  *before* this check existed, the moment the modal opens. One entry per **(desk, course)** carrying
+  every student in it, so 3+ students at one desk collapse into a single warning.
+- **UI** — a pinned panel under the participants list: `.list-scroll` takes the overflow so
+  `.conflicts` stays in view. Clicking a warning calls `focusConflict()`, switching the classroom tab.
+  i18n `test_cycles.seating.conflicts_title` / `.desk`.
+- Conflicts are **frontend-only** — nothing is persisted or validated server-side.
 
 ### Performance gotcha (important)
 The hot path is rendering, not data. Fixes that mattered:
@@ -150,7 +211,10 @@ the per-day participants export is the same PDF scoped to one test.
 - **Landscape A4, one page per classroom** (only rooms that have assignments).
 - **Zoom-to-content:** fits the bounding box of the desks+seats (rotation-safe via half-diagonal, padded)
   into the drawable area instead of the whole 1200×800 canvas, so everything renders larger.
-- Desks = rotated rects (+ label). Seats = circles; occupied seats are green with the student's name on
+  The half-diagonal **over-estimates** an ellipse's extent, which is harmless (extra padding), so
+  `computeBounds` needed no change for round desks.
+- Desks = rotated rects, or **`doc.ellipse(cx, cy, w/2, h/2)` when `shape === "circle"`**
+  *(2026-07-23)* (+ label). Seats = circles; occupied seats are green with the student's name on
   **two lines — surname (bold) on top, first name below** — auto-shrunk per line via `widthOfString`
   (font 8–14 / 7–12) so long names **don't get cut off**. Free seats show their number.
 
@@ -166,3 +230,28 @@ the per-day participants export is the same PDF scoped to one test.
 | BE model | `models/classroom.js` `layout` | `models/test.js` `seating_plan` | — |
 | BE route/ctrl | `/classrooms/save-layout` | `/test-cycles/save-test-seating` | `/test-cycles/export-store-test-{participants,seating}` |
 | BE helper | — | — | `helpers/createSeatingPlanPdf.js` |
+
+### Touch points of the 2026-07-23 pass
+
+| Change | Files |
+|---|---|
+| Round desks | FE `classroom-layout.model.ts` (`DeskShape`), `classroom-diagram.component.{ts,html}` (`addDesk(shape)`, `createDeskGroup`, `deskContainsPoint`), `test-seating-modal.component.ts` (`buildDesk`), `i18n el/en` (`classrooms.diagram.add_round_desk`) · BE `models/classroom.js`, `controllers/handlers/classroom.js` (`normalizeLayout`), `helpers/createSeatingPlanPdf.js` |
+| Conflict warnings | FE `test-seating-modal.component.{ts,html,scss}` (`SeatingConflict`, `indexDayCourses`, `findDeskConflict`, `recomputeConflicts`, `focusConflict`) · `i18n el/en` (`test_cycles.seating.conflicts_title`/`.desk`, `messages.seating_same_course_desk`) |
+| Button sizing | FE `classroom-diagram.component.{html,scss}`, `test-cycle-details.component.{html,scss}` — see the CSS note below |
+
+### Gotcha: the breadcrumb-bar buttons *(2026-07-23)*
+
+Both this feature's pages had a **full-width, oversized** action button (the κάτοψη `Save` measured
+1054px; the test-cycle-details `Add test day`/`Export report` ~505px each). Two **global** rules cause
+it, so **every page with a `.breadcrumb-bar` is affected**:
+
+1. `global.scss` `.breadcrumb-actions ion-button { flex: 1 1 auto }` — `flex-grow: 1` inflates the
+   buttons to fill the bar.
+2. `.page-background { display: flow-root }` is declared **after** `.breadcrumb-bar { display: flex }`
+   and wins on source order, so the actions drop onto a row of their own instead of sitting at the
+   right of the breadcrumbs.
+
+Fixed **scoped to these two pages** (`display: flex` on `.breadcrumb-bar.page-background`,
+`flex: 0 0 auto` on the buttons, stretch restored under 768px). A global fix is still open — it would
+move buttons on ~20 pages at once. `flow-root` is there to keep a child's bottom margin from escaping;
+flex establishes a formatting context too, so overriding it on this element is safe.
