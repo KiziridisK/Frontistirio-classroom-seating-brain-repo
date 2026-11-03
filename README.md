@@ -20,6 +20,17 @@
 
 ---
 
+## 2026-11-03 — fabric εκτός initial bundle (frontend `dc6cfff`, dev)
+
+- `/classrooms/:classroomId` (`ClassroomDiagramComponent`) → `loadComponent`.
+- Το modal καθισμάτων (`TestSeatingModalComponent`) φορτώνεται με `await import('../test-seating-modal/…')` μέσα στο
+  `test-cycle-details` τη στιγμή που ανοίγει· δεν υπάρχει πια στατικό import του.
+- Αποτέλεσμα: το `fabric` (~400 kB πριν το minify) δεν κατεβαίνει σε κάθε χρήστη. **Κανόνας:** όποιο νέο σημείο χρειάζεται
+  `fabric` το φέρνει lazy (route ή `import()`), αλλιώς ξαναμπαίνει στο `main`.
+- Σχετικό (API `14ecbc7`): τα PDF κύκλου/συμμετεχόντων δεν τυπώνουν διαγραμμένους μαθητές (bugs → TC-08)· η διαγραφή
+  αίθουσας καθαρίζει μόνο `classroom_id/classroom_name` στις ώρες του προγράμματος και η μόνιμη αρνείται όταν ένα
+  διαγώνισμα έβαλε μαθητές να κάτσουν σε αυτήν (course-class-management → «Κάδος ανακύκλωσης»).
+
 ## Three phases (all done)
 
 1. **κάτοψη editor** — design a classroom's layout (desks + seats), saved on the classroom.
