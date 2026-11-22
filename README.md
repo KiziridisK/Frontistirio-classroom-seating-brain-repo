@@ -20,12 +20,11 @@
 
 ---
 
-## 2026-11-20 — fabric 6.9 → 7.4 (ασφάλεια) — ⚠️ ΧΩΡΙΣ COMMIT στις 2026-11-22
+## 2026-11-20 — fabric 6.9 → 7.4 (ασφάλεια) — live στο 1.6.10 (frontend `9d92ce2`)
 
 - `package.json`: `"fabric": "^6.9.0"` → `"^7.4.0"`. Ο λόγος είναι ασφάλεια: η 7 ρίχνει τα προαιρετικά node deps της 6
   (jsdom 20, `canvas`, και το **critical** `tar` του `npm audit`).
-- Η αλλαγή βρίσκεται στο working tree του local branch `refactor/student-profile-actions` (μαζί με ~146 άλλα αρχεία).
-  Στο `main` (και στο prod 1.6.9) είναι ακόμα **6.9**. Όταν γίνει commit/release, σβήσε αυτή τη σημείωση.
+- Committed `9d92ce2`, live στο **1.6.10** (2026-11-22, tag `v1.6.10` → `eb99e99`).
 - **Η αλλαγή συμπεριφοράς της 7:** το default `originX/originY` γίνεται `center`. Εδώ δεν πειράζει, γιατί κάθε shape στο
   `classroom-diagram` και στο `test-seating-modal` ορίζει ρητά το origin του, και η `Line` της 7 τοποθετείται από το κέντρο.
   **Κανόνας:** νέο shape → όρισε ρητά `originX`/`originY`.
